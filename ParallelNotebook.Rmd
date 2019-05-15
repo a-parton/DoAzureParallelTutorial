@@ -1,0 +1,296 @@
+---
+title: "doAzureParallel - parallel computing in the cloud"
+author: "Alison Poulston"
+date: "14th May 2019"
+output: 
+  revealjs::revealjs_presentation:
+    theme: serif
+    highlight: haddock
+    center: true
+---
+
+## Embarrassingly Parallel
+
+- Little or *no dependency* or need for communication between those parallel tasks, or for results between them.
+
+- Different from *distributed computing problems* that need communication between tasks, especially communication of intermediate results.
+
+- The opposite of embarrassingly parallel problems are inherently *serial problems*, which cannot be parallelized at all.
+
+## Easiest way to spot this
+
+- For loop where **only i** features, not for example *i-1* and *i*.
+
+## Point of this talk
+
+- You have an embarrassingly parallel problem that you want to speed up.
+
+- You don't have the time/temperament to get over the learning curve of setting batch jobs up yourself or using VMs.
+
+- Cloud computing can help with a lot of different compute-time issues, but today we're focusing on a very limited scenario because it's going to only take 10 mins to learn how to implement and get using it.
+
+- You get your results back instantly and can go on to using them in the rest of your rscript without hassle.
+
+## Packages
+
+- Before we go to the cloud, let's look at parallelising on our own machine.
+
+```{r load_packages}
+library(doParallel)
+```
+
+## A (slow) birthday problem
+
+```{r birthday_problem}
+pbirthdaysim <- function(n, nsims = 100000, feb29 = TRUE) {
+ # Using nsims simulations, estimate the probability
+ # that a room of n people includes a shared birthday
+ 
+ if(!feb29){
+   bdays <- 1:365
+   probs <- rep(1/365, 365)
+ } else { # Feb 29 is day 366, sample other days 4 times as often
+   bdays <- 1:366 
+   probs <- c(rep(4,365),1) 
+   probs <- probs / sum(probs)
+ }
+ 
+ anydup <- function(ignored) 
+  # simulate n birthdays, return TRUE if there's a duplicate
+  any(duplicated(
+   sample(bdays, n, prob=probs, replace=TRUE)))
+ 
+ sum(sapply(seq(nsims), anydup)) / nsims
+}
+```
+
+
+## `Foreach` implementation
+
+Re-writing a for-loop as a sequential `foreach` loop:
+```{r}
+x <- foreach(i = 1:3) %do% sqrt(i)
+x
+```
+
+---
+
+With `foreach` we can easily include more than one iterator:
+```{r}
+x <- foreach(a = 1:3, b = 4:6) %do% {
+  a + b
+}
+x
+
+```
+
+---
+
+We can control how we want our results to be combined and stored.
+
+<small>
+- Specifying 'c' is useful for concatenating the results into a vector.
+</small>
+<small>
+- The values 'cbind' and 'rbind' can combine vectors into a matrix. 
+</small>
+<small>
+- The values '+' and '*' can be used to process numeric data.
+</small>
+
+```{r}
+x <- foreach(i = 1:3, .combine = 'c') %do% sqrt(i)
+x
+```
+
+---
+
+The values for the iteration variables don’t have to be specified with only vectors or lists. 
+
+<small>
+- Can be specified with an iterator, many of which come with the iterators package.
+</small>
+<small>
+- A vector isn’t itself an iterator, but the foreach function automatically
+creates an iterator from a vector, list, matrix, or data frame, for example. 
+</small>
+
+```{r}
+a <- iter(1:3)
+nextElem(a)
+nextElem(a)
+nextElem(a)
+```
+
+---
+
+```{r}
+a <- matrix(runif(20), nrow = 10)
+x <- foreach(i = iter(a, by = 'row'), .combine = 'c') %do% sum(i)
+x
+```
+
+---
+
+```{r}
+a <- data.frame(x = runif(100), y = factor(sample(c("A", "B"), 100, replace = T)))
+head(a)
+b <- isplit(a$x, a$y)
+x <- foreach(i = b, .combine = 'c') %do% sum(i$value)
+x
+```
+
+## Birthday problem in sequence
+
+Regular for-loop syntax would be:
+```
+bdayp <- rep(NA, 100)
+for (n in 1:100) {
+  bdayp[n] <- pbirthdaysim(n)
+}
+```
+
+In `foreach` it would be:
+
+```{r birthday_sequence, cache = TRUE}
+stime <- system.time({
+  bdayp <- foreach(n = 1:100, .combine = 'c') %do% pbirthdaysim(n)
+})
+
+stime
+
+```
+
+---
+
+```{r}
+plot(bdayp, xlab="People in room", ylab="Probability of shared birthday")
+abline(h=0.5)
+```
+
+## Executing foreach in parallel on your machine
+
+- To register `doParallel` to be used with `foreach`, you must call the `registerDoParallel` function.
+- This register's a parallel backend for `foreach` that is the cores of your machine.
+
+- Let's make our cluster:
+
+```{r}
+cl <- makeCluster(2)
+registerDoParallel(cl)
+getDoParWorkers() # Check that the nodes are running
+```
+
+---
+
+We run exactly the same thing as before, but now we change `%do%` to `%dopar%`:
+
+```{r, cache = TRUE}
+ptime <- system.time({
+  bdayp <- foreach(n = 1:100, .combine = 'c') %dopar% pbirthdaysim(n)
+})
+
+ptime
+
+stopCluster(cl)
+
+```
+
+## Executing foreach in parallel on Azure
+
+Dependencies:
+```{r}
+# install the package devtools
+#install.packages("devtools")
+
+# install the doAzureParallel and rAzureBatch package
+#devtools::install_github("Azure/rAzureBatch")
+#devtools::install_github("Azure/doAzureParallel")
+
+library(doAzureParallel)
+```
+
+## Set up for Azure
+
+- Step 1: Get an [Azure account](https://azure.microsoft.com/en-gb/free/search/?&OCID=AID719823_SEM_ZesfCvwc&lnkd=Google_Azure_Brand&dclid=CIPA5fnokOICFbIh0wodriICmg).
+
+- Step 2: Create a **batch** account and a **storage** account. Do this using helpful prompts on [Azure](https://portal.azure.com/#home), or follow this [script](https://github.com/Azure/doAzureParallel/blob/master/docs/02-getting-started-script.md).
+
+- Step 3: Set your credentials and cluster info and then we're away to go!
+
+## Credentials file
+
+<small>
+You can auto-generate these and fill them in with the correct information.
+</small>
+
+```{r}
+generateCredentialsConfig("credentials.json")
+```
+
+```{r engine='bash', comment=''}
+cat credentials.json
+```
+
+## Cluster file
+
+<small>
+Similarly...
+</small>
+
+```{r}
+generateClusterConfig("cluster.json")
+```
+
+```{r engine='bash', comment=''}
+cat cluster.json
+```
+
+---
+
+I'm going to change these default cluster options to look like:
+```{r engine='bash', comment=''}
+cat my_cluster.json
+```
+
+---
+
+Set your credentials, then spin up your cluster - this will take a while the first time!
+
+```{r}
+setCredentials("my_credentials.json")
+```
+---
+```{r}
+# Create your cluster if it does not exist; this takes a few minutes
+cluster <- makeCluster("my_cluster.json")
+```
+---
+```{r}
+# Register your parallel backend
+registerDoAzureParallel(cluster)
+# Check that the nodes are running
+getDoParWorkers()
+```
+
+---
+
+Now that we've changed our parallel backend, let's run the same thing again but on Azure.
+
+```{r}
+atime <- system.time({
+  bdayp <- foreach(n = 1:100, .combine = 'c') %dopar% pbirthdaysim(n)
+})
+```
+---
+```{r}
+atime
+
+stopCluster(cluster)
+
+```
+---
+```{r}
+plot(bdayp, xlab="People in room", ylab="Probability of shared birthday")
+abline(h=0.5)
+```
